@@ -86,4 +86,4 @@ def pending_tool_calls(state: AgentState):
         return END
 agent.add_conditional_edges("model", pending_tool_calls, {"tools": "tools", END: END})
 
-research_assistant = agent.compile()
+duckduckgo_agent = agent.compile()

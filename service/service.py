@@ -16,7 +16,7 @@ from langsmith import Client as LangsmithClient
 from agent.agents import chart_generator, research_assistant, duckduckgo_agent
 
 from agent.agent_registry import AgentRegistry
-from schema import ChatMessage, Feedback, UserInput, StreamInput, AgentList
+from schema import ChatMessage, Feedback, UserInput, StreamInput, AgentList, AgentInfo
 
 # Set up the logging configuration
 logging.basicConfig(
@@ -44,11 +44,7 @@ class TokenQueueStreamingHandler(AsyncCallbackHandler):
 async def lifespan(app: FastAPI):
     # Construct agent with Sqlite checkpointer
     async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as saver:
-        registry = AgentRegistry()
-        registry.register("research-assistant", research_assistant.research_assistant)
-        registry.register("duckduckgo", duckduckgo_agent.research_assistant)
-        registry.register("chart_generator", chart_generator.agent)
-
+        registry = AgentRegistry(load_direrctory="agent/agents")
         for agent in registry.get_all():
             agent.checkpointer = saver
         app.state.registry = registry
@@ -57,7 +53,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-@app.middleware("http")
+# @app.middleware("http")
 async def logging_middleware(request: Request, call_next):
     logger.info("Received request: %s", str(request.body))
     response = await call_next(request)
@@ -141,7 +137,8 @@ async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None
     while s := await output_queue.get():
         if isinstance(s, str):
             # str is an LLM token
-            yield f"data: {json.dumps({'type': 'token', 'content': s})}\n\n"
+            wire_msg = f"data: {json.dumps({'type': 'token', 'content': s})}\n\n"
+            yield wire_msg
             continue
 
         # Otherwise, s should be a dict of state updates for each node in the graph.
@@ -154,14 +151,17 @@ async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None
                 chat_message = ChatMessage.from_langchain(message)
                 chat_message.run_id = str(run_id)
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': f'Error parsing message: {e}'})}\n\n"
+                wire_msg = f"data: {json.dumps({'type': 'error', 'content': f'Error parsing message: {e}'})}\n\n"
+                yield wire_msg
                 continue
             # LangGraph re-sends the input message, which feels weird, so drop it
             if chat_message.type == "human" and chat_message.content == user_input.message:
                 continue
-            yield f"data: {json.dumps({'type': 'message', 'content': chat_message.dict()})}\n\n"
+            wire_msg = f"data: {json.dumps({'type': 'message', 'content': chat_message.dict()})}\n\n"
+            yield wire_msg
 
     await stream_task
+    logger.info("Stream complete")
     yield "data: [DONE]\n\n"
 
 @app.post("/stream")
@@ -202,3 +202,9 @@ async def list_agents():
     agents = app.state.registry.get_all_names()
     logger.debug("Registered Agents: %s", agents)
     return AgentList(agents=agents)
+
+@app.get("/agents/{agent_name}")
+async def get_agent_graph(agent_name) -> AgentInfo:
+    graph = app.state.registry.get_graph(agent_name)
+    logger.info("Agent Graph: %s", graph)
+    return AgentInfo(mermaid_graph=graph)

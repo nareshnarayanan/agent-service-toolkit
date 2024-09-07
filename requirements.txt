@@ -10,7 +10,6 @@ fastapi
 pydantic
 python-dotenv~=1.0.1
 streamlit
-streamlit-card
 uvicorn~=0.30.5
 langchain-core~=0.2.26
 langchain-community~=0.2.11

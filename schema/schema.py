@@ -141,3 +141,10 @@ class AgentList(BaseModel):
         description="List of available agents.",
         examples=[["research-assistant", "duckduckgo"]],
     )
+
+class AgentInfo(BaseModel):
+    """ Information about the agent"""
+    mermaid_graph: str = Field(
+        description="The agent's graph in mermaid format.",
+        examples=["graph TD\n  A[Agent] --> B[Tool]"],
+    )

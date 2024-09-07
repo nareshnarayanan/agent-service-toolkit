@@ -46,7 +46,6 @@ def wrap_model(model: BaseChatModel):
 
 async def acall_model(state: AgentState, config: RunnableConfig):
     m = agent_registry.get_llm()
-    logger.info("Using model" + str(m))
     model_runnable = wrap_model(m)
     response = await model_runnable.ainvoke(state, config)
     if state["is_last_step"] and response.tool_calls:

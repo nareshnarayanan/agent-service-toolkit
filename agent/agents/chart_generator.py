@@ -133,4 +133,4 @@ workflow.add_conditional_edges(
     },
 )
 workflow.add_edge(START, "Researcher")
-agent = workflow.compile()
+chart_generator = workflow.compile()

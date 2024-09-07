@@ -4,7 +4,7 @@ from typing import AsyncGenerator, List
 from uuid import uuid4
 
 import streamlit as st
-from streamlit_card import card
+import streamlit_mermaid as stmd
 
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 from client import AgentClient
@@ -25,7 +25,9 @@ from schema import ChatMessage
 APP_TITLE = "Agent Nirvana"
 APP_ICON = "🧰"
 
-@st.cache_resource
+# DEBUG INFO
+LANGSMITH_THREAD_URL_TEMPLATE = "https://smith.langchain.com/o/7a461e0c-7c23-5c4c-9c5d-e979414ee876/projects/p/d4a2cc98-7bf4-49e9-9097-a65c4d3b9f86/t/{thread_id}"
+
 def get_agent_client():
     agent_url = os.getenv("AGENT_URL", "http://localhost")
     return AgentClient(agent_url)
@@ -90,7 +92,8 @@ async def main():
     @st.dialog("Current Session")
     def show_debug():
         with st.container():
-            st.json(SessionManager.get_current_session())
+            st.link_button("Langsmith", LANGSMITH_THREAD_URL_TEMPLATE.format(thread_id=SessionManager.get_current_session_id()))
+            st.json(SessionManager.get_current_session(), expanded=False)
 
     # Config options
     with st.sidebar:
@@ -98,10 +101,21 @@ async def main():
         debug = st.button("Debug", key="debug")
         if debug:
             show_debug()
-    
+
     agents = await get_agent_client().alist_agents()
 
-    selected_agent = st.selectbox("Agent", agents["agents"])
+    # @st.dialog("Agent Info", width="large")
+    def graph_agent(graph):
+        with st.sidebar.expander("Agent Graph", expanded=True):
+            stmd.st_mermaid(graph)
+    selected_agent = st.sidebar.selectbox("Agent", agents["agents"])
+    agent_info = await get_agent_client().aget_agent_info(selected_agent)
+    mermaid = agent_info["mermaid_graph"]\
+        .replace("%%{init: {'flowchart': {'curve': 'linear'}}}%%",\
+        "%%{init: {'theme': 'dark', 'flowchart': {'curve': 'basis'}}}%%")\
+        .replace("#f2f0ff", "#f2f0f")\
+        .replace("#bfb6fc", "#754b4b")
+    graph_agent(mermaid)
 
     session = None
     session_id = None
@@ -138,7 +152,7 @@ async def main():
     messages: List[ChatMessage] = session["messages"]
 
     if len(messages) == 0:
-        WELCOME = "Hello! I'm an AI-powered research assistant with web search and a calculator. I may take a few seconds to boot up when you send your first message. Ask me anything!"
+        WELCOME = "Hello! Choose one of the agents above and ask me anything!"
         with st.chat_message("ai"):
             st.write(WELCOME)
 
@@ -163,9 +177,10 @@ async def main():
         st.rerun() # Clear stale containers
 
     # If messages have been generated, show feedback widget
-    if len(messages) > 0:
-        with SessionManager.get_current_session()["last_message"]:
-            await handle_feedback()
+    # TODO: st.feedback is not working as expected.
+    # if len(messages) > 0:
+    #     with SessionManager.get_current_session()["last_message"]:
+    #         await handle_feedback()
 
 
 async def draw_messages(
@@ -210,7 +225,7 @@ async def draw_messages(
                     SessionManager.get_current_session()["last_message"] = st.chat_message("ai")
                 with SessionManager.get_current_session()["last_message"]:
                     streaming_placeholder = st.empty()
-            
+
             streaming_content += msg
             streaming_placeholder.write(streaming_content)
             continue
@@ -291,9 +306,11 @@ async def handle_feedback():
     # Keep track of last feedback sent to avoid sending duplicates
     if "last_feedback" not in SessionManager.get_current_session():
         SessionManager.get_current_session()["last_feedback"] = (None, None)
-    
+
     latest_run_id = SessionManager.get_current_session()["messages"][-1].run_id
-    feedback = st.feedback("stars", key=latest_run_id)
+    print("Going to render feedback widget for run ID:", latest_run_id)
+    feedback = st.feedback(options="thumbs", key=latest_run_id)
+    print("Feedback:", feedback)
 
     # If the feedback value or run ID has changed, send a new feedback record
     if feedback and (latest_run_id, feedback) != SessionManager.get_current_session()["last_feedback"]:

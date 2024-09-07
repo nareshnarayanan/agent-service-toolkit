@@ -181,6 +181,19 @@ class AgentClient:
                     raise Exception(f"Error: {response.status} - {await response.text()}")
                 return await response.json()
 
+    async def aget_agent_info(self, agent_name) -> str:
+        """
+        Get the agent's graph as a mermaid markup string.
+
+        Returns:
+            str: The agent's graph in mermaid format
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{self.base_url}/agents/{agent_name}", headers=self._headers) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
     async def acreate_feedback(
             self,
             run_id: str,
