@@ -1,7 +1,8 @@
 from dotenv import load_dotenv
-import uvicorn
 
-from service import app
-
+# Load environment variables first before imports.
 load_dotenv()
-uvicorn.run(app, host="0.0.0.0", port=80)
+
+import uvicorn
+from service import app
+uvicorn.run(app, host="0.0.0.0", port=80, log_level="debug")

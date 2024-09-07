@@ -2,6 +2,8 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import os
+import logging, coloredlogs
+import traceback
 from typing import AsyncGenerator, Dict, Any, Tuple
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -11,10 +13,22 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.graph import CompiledGraph
 from langsmith import Client as LangsmithClient
+from agent.agents import chart_generator, research_assistant, duckduckgo_agent
 
-from agent import research_assistant
-from schema import ChatMessage, Feedback, UserInput, StreamInput
+from agent.agent_registry import AgentRegistry
+from schema import ChatMessage, Feedback, UserInput, StreamInput, AgentList
 
+# Set up the logging configuration
+logging.basicConfig(
+    level=logging.INFO,  # Set the logging level (e.g., DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",  # Format the log messages
+    handlers=[
+        logging.StreamHandler()  # Output to the terminal
+    ]
+)
+coloredlogs.install(level='INFO')
+
+logger = logging.getLogger(__name__)  # Create a logger for your application
 
 class TokenQueueStreamingHandler(AsyncCallbackHandler):
     """LangChain callback handler for streaming LLM tokens to an asyncio queue."""
@@ -30,12 +44,25 @@ class TokenQueueStreamingHandler(AsyncCallbackHandler):
 async def lifespan(app: FastAPI):
     # Construct agent with Sqlite checkpointer
     async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as saver:
-        research_assistant.checkpointer = saver
-        app.state.agent = research_assistant
+        registry = AgentRegistry()
+        registry.register("research-assistant", research_assistant.research_assistant)
+        registry.register("duckduckgo", duckduckgo_agent.research_assistant)
+        registry.register("chart_generator", chart_generator.agent)
+
+        for agent in registry.get_all():
+            agent.checkpointer = saver
+        app.state.registry = registry
         yield
     # context manager will clean up the AsyncSqliteSaver on exit
 
 app = FastAPI(lifespan=lifespan)
+
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    logger.info("Received request: %s", str(request.body))
+    response = await call_next(request)
+    logger.info("Sent response: %s", str(response.__dict__))
+    return response
 
 @app.middleware("http")
 async def check_auth_header(request: Request, call_next):
@@ -54,7 +81,7 @@ def _parse_input(user_input: UserInput) -> Tuple[Dict[str, Any], str]:
     kwargs = dict(
         input={"messages": [input_message.to_langchain()]},
         config=RunnableConfig(
-            configurable={"thread_id": thread_id, "model": user_input.model},
+            configurable={"thread_id": thread_id},
             run_id=run_id,
         ),
     )
@@ -68,8 +95,9 @@ async def invoke(user_input: UserInput) -> ChatMessage:
     Use thread_id to persist and continue a multi-turn conversation. run_id kwarg
     is also attached to messages for recording feedback.
     """
-    agent: CompiledGraph = app.state.agent
     kwargs, run_id = _parse_input(user_input)
+    logger.info("Invoking agent[%s] with input: %s, %s", user_input.agent, kwargs, run_id)
+    agent: CompiledGraph = app.state.registry.get(user_input.agent)
     try:
         response = await agent.ainvoke(**kwargs)
         output = ChatMessage.from_langchain(response["messages"][-1])
@@ -84,21 +112,29 @@ async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None
 
     This is the workhorse method for the /stream endpoint.
     """
-    agent: CompiledGraph = app.state.agent
+    logger.info("Invoking agent[%s] with input: %s", user_input.agent, user_input)
+    agent: CompiledGraph = app.state.registry.get(user_input.agent)
     kwargs, run_id = _parse_input(user_input)
+    logger.info("Starting stream for input: %s, %s", kwargs, run_id)
 
     # Use an asyncio queue to process both messages and tokens in
     # chronological order, so we can easily yield them to the client.
-    output_queue = asyncio.Queue(maxsize=10)
+    output_queue = asyncio.Queue()
     if user_input.stream_tokens:
         kwargs["config"]["callbacks"] = [TokenQueueStreamingHandler(queue=output_queue)]
-    
+
     # Pass the agent's stream of messages to the queue in a separate task, so
     # we can yield the messages to the client in the main thread.
     async def run_agent_stream():
-        async for s in agent.astream(**kwargs, stream_mode="updates"):
-            await output_queue.put(s)
-        await output_queue.put(None)
+        try:
+            async for s in agent.astream(**kwargs, stream_mode="updates"):
+                await output_queue.put(s)
+            await output_queue.put(None)
+        except Exception as e:
+            traceback.print_tb(e.__traceback__)
+            logger.error("Error streaming messages: %s", e)
+            await output_queue.put(f"Error streaming messages: {e}")
+            await output_queue.put(None)
     stream_task = asyncio.create_task(run_agent_stream())
 
     # Process the queue and yield messages over the SSE stream.
@@ -124,7 +160,7 @@ async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None
             if chat_message.type == "human" and chat_message.content == user_input.message:
                 continue
             yield f"data: {json.dumps({'type': 'message', 'content': chat_message.dict()})}\n\n"
-    
+
     await stream_task
     yield "data: [DONE]\n\n"
 
@@ -156,3 +192,13 @@ async def feedback(feedback: Feedback):
         **kwargs,
     )
     return {"status": "success"}
+
+
+@app.get("/agents")
+async def list_agents():
+    """
+    Return a list of agent names registered with the service.
+    """
+    agents = app.state.registry.get_all_names()
+    logger.debug("Registered Agents: %s", agents)
+    return AgentList(agents=agents)

@@ -1,8 +1,11 @@
 import asyncio
 import os
 from typing import AsyncGenerator, List
+from uuid import uuid4
 
 import streamlit as st
+from streamlit_card import card
+
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 from client import AgentClient
 from schema import ChatMessage
@@ -19,7 +22,7 @@ from schema import ChatMessage
 # The app heavily uses AgentClient to interact with the agent's FastAPI endpoints.
 
 
-APP_TITLE = "Agent Service Toolkit"
+APP_TITLE = "Agent Nirvana"
 APP_ICON = "🧰"
 
 @st.cache_resource
@@ -27,12 +30,44 @@ def get_agent_client():
     agent_url = os.getenv("AGENT_URL", "http://localhost")
     return AgentClient(agent_url)
 
+class SessionManager:
+    def init():
+        if "sessions" not in st.session_state:
+            st.session_state.sessions = {}
+            st.session_state.current_session_id = get_script_run_ctx().session_id
+            st.session_state.sessions[st.session_state.current_session_id] = {
+                "messages": [],
+            }
+
+    def set_current_session(session_id):
+        st.session_state.current_session_id = session_id
+    
+    def get_current_session_id():
+        return st.session_state.current_session_id
+
+    def get_current_session():
+        return st.session_state.sessions[st.session_state.current_session_id]
+
+    def new_session():
+        session_id = str(uuid4())
+        st.session_state.sessions[session_id] = {
+            "messages": [],
+        }
+        SessionManager.set_current_session(session_id)
+        return session_id
+    
+    def get_all_session_ids():
+        return [s for s in st.session_state.sessions.keys()]
+    
+    def get_session(session_id):
+        return st.session_state.sessions[session_id]
 
 async def main():
     st.set_page_config(
         page_title=APP_TITLE,
         page_icon=APP_ICON,
-        menu_items={},
+        menu_items={
+        },
     )
 
     # Hide the streamlit upper-right chrome
@@ -52,39 +87,55 @@ async def main():
         await asyncio.sleep(0.1)
         st.rerun()
 
-    models = {
-        "OpenAI GPT-4o-mini (streaming)": "gpt-4o-mini",
-        "llama-3.1-70b on Groq": "llama-3.1-70b",
-    }
+    @st.dialog("Current Session")
+    def show_debug():
+        with st.container():
+            st.json(SessionManager.get_current_session())
+
     # Config options
     with st.sidebar:
         st.header(f"{APP_ICON} {APP_TITLE}")
-        ""
-        "Full toolkit for running an AI agent service built with LangGraph, FastAPI and Streamlit"
-        with st.popover(":material/settings: Settings", use_container_width=True):
-            m = st.radio("LLM to use", options=models.keys())
-            model = models[m]
-            use_streaming = st.toggle("Stream results", value=True)
-        
-        @st.dialog("Architecture")
-        def architecture_dialog():
-            st.image("https://github.com/JoshuaC215/agent-service-toolkit/blob/main/media/agent_architecture.png?raw=true")
-            "[View full size on Github](https://github.com/JoshuaC215/agent-service-toolkit/blob/main/media/agent_architecture.png)"
-            st.caption("App hosted on [Streamlit Cloud](https://share.streamlit.io/) with FastAPI service running in [Azure](https://learn.microsoft.com/en-us/azure/app-service/)")
+        debug = st.button("Debug", key="debug")
+        if debug:
+            show_debug()
+    
+    agents = await get_agent_client().alist_agents()
 
-        if st.button(":material/schema: Architecture", use_container_width=True):
-            architecture_dialog()
+    selected_agent = st.selectbox("Agent", agents["agents"])
 
-        with st.popover(":material/policy: Privacy", use_container_width=True):
-            st.write("Prompts, responses and feedback in this app are anonymously recorded and saved to LangSmith for product evaluation and improvement purposes only.")
+    session = None
+    session_id = None
+    # List sessions
+    with st.sidebar:
+        SessionManager.init()
+        session_ids = SessionManager.get_all_session_ids()
 
-        "[View the source code](https://github.com/JoshuaC215/agent-service-toolkit)"
-        st.caption("Made with :material/favorite: by [Joshua](https://www.linkedin.com/in/joshua-k-carroll/) in Oakland")
+        with st.columns([1, 1, 1])[1]:
+            new_session = st.button("New +")
+            if new_session:
+                session_id = SessionManager.new_session()
+                st.rerun()
 
-    # Draw existing messages
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    messages: List[ChatMessage] = st.session_state.messages
+        session_id = SessionManager.get_current_session_id()
+        session = SessionManager.get_session(session_id)
+
+        for id in session_ids:
+            if "title" not in SessionManager.get_session(id):
+                title = "New Session : " + id
+            else:
+                title = SessionManager.get_session(id)["title"]
+
+            display = title
+            if len(display) > 36:
+                display = display[:36] + "..."
+
+            hasClicked = st.button(label=display, help=title, disabled=id == session_id, use_container_width=True)
+            if hasClicked:
+                SessionManager.set_current_session(id)
+                session_id = id
+                st.rerun()
+
+    messages: List[ChatMessage] = session["messages"]
 
     if len(messages) == 0:
         WELCOME = "Hello! I'm an AI-powered research assistant with web search and a calculator. I may take a few seconds to boot up when you send your first message. Ask me anything!"
@@ -99,28 +150,21 @@ async def main():
     # Generate new message if the user provided new input
     if input := st.chat_input():
         messages.append(ChatMessage(type="human", content=input))
+        if "title" not in session:
+            session["title"] = input
         st.chat_message("human").write(input)
         agent_client = get_agent_client()
-        if use_streaming:
-            stream = agent_client.astream(
-                message=input,
-                model=model,
-                thread_id=get_script_run_ctx().session_id,
-            )
-            await draw_messages(stream, is_new=True)
-        else:
-            response = await agent_client.ainvoke(
-                message=input,
-                model=model,
-                thread_id=get_script_run_ctx().session_id,
-            )
-            messages.append(response)
-            st.chat_message("ai").write(response.content)
+        stream = agent_client.astream(
+            message=input,
+            agent=selected_agent,
+            thread_id=session_id,
+        )
+        await draw_messages(stream, is_new=True)
         st.rerun() # Clear stale containers
 
     # If messages have been generated, show feedback widget
     if len(messages) > 0:
-        with st.session_state.last_message:
+        with SessionManager.get_current_session()["last_message"]:
             await handle_feedback()
 
 
@@ -148,7 +192,7 @@ async def draw_messages(
 
     # Keep track of the last message container
     last_message_type = None
-    st.session_state.last_message = None
+    SessionManager.get_current_session()["last_message"] = None
 
     # Placeholder for intermediate streaming tokens
     streaming_content = ""
@@ -163,8 +207,8 @@ async def draw_messages(
             if not streaming_placeholder:
                 if last_message_type != "ai":
                     last_message_type = "ai"
-                    st.session_state.last_message = st.chat_message("ai")
-                with st.session_state.last_message:
+                    SessionManager.get_current_session()["last_message"] = st.chat_message("ai")
+                with SessionManager.get_current_session()["last_message"]:
                     streaming_placeholder = st.empty()
             
             streaming_content += msg
@@ -185,14 +229,14 @@ async def draw_messages(
             case "ai":
                 # If we're rendering new messages, store the message in session state
                 if is_new:
-                    st.session_state.messages.append(msg)
-                
+                    SessionManager.get_current_session()["messages"].append(msg)
+
                 # If the last message type was not AI, create a new chat message
                 if last_message_type != "ai":
                     last_message_type = "ai"
-                    st.session_state.last_message = st.chat_message("ai")
+                    SessionManager.get_current_session()["last_message"] = st.chat_message("ai")
                 
-                with st.session_state.last_message:
+                with SessionManager.get_current_session()["last_message"]:
                     # If the message has content, write it out.
                     # Reset the streaming variables to prepare for the next message.
                     if msg.content:
@@ -210,7 +254,7 @@ async def draw_messages(
                         call_results = {}
                         for tool_call in msg.tool_calls:
                             status = st.status(
-                                    f"""Tool Call: {tool_call["name"]}""",
+                                    f"""**{tool_call["name"]}**\n\n {tool_call["args"]}""",
                                     state="running" if is_new else "complete",
                                 )
                             call_results[tool_call["id"]] = status
@@ -228,7 +272,7 @@ async def draw_messages(
                             # Record the message if it's new, and update the correct
                             # status container with the result
                             if is_new:
-                                st.session_state.messages.append(tool_result)
+                                SessionManager.get_current_session()["messages"].append(tool_result)
                             status = call_results[tool_result.tool_call_id]
                             status.write("Output:")
                             status.write(tool_result.content)
@@ -245,14 +289,14 @@ async def handle_feedback():
     """Draws a feedback widget and records feedback from the user."""
 
     # Keep track of last feedback sent to avoid sending duplicates
-    if "last_feedback" not in st.session_state:
-        st.session_state.last_feedback = (None, None)
+    if "last_feedback" not in SessionManager.get_current_session():
+        SessionManager.get_current_session()["last_feedback"] = (None, None)
     
-    latest_run_id = st.session_state.messages[-1].run_id
+    latest_run_id = SessionManager.get_current_session()["messages"][-1].run_id
     feedback = st.feedback("stars", key=latest_run_id)
 
     # If the feedback value or run ID has changed, send a new feedback record
-    if feedback and (latest_run_id, feedback) != st.session_state.last_feedback:
+    if feedback and (latest_run_id, feedback) != SessionManager.get_current_session()["last_feedback"]:
         
         # Normalize the feedback value (an index) to a score between 0 and 1
         normalized_score = (feedback + 1) / 5.0
@@ -266,7 +310,7 @@ async def handle_feedback():
                 comment="In-line human feedback",
             ),
         )
-        st.session_state.last_feedback = (latest_run_id, feedback)
+        SessionManager.get_current_session()["last_feedback"] = (latest_run_id, feedback)
         st.toast("Feedback recorded", icon=":material/reviews:")
 
 

@@ -1,0 +1,5 @@
+1. Support multiple agents individually (DONE with an agent registry)
+2. Support sending back the agent that responded to the message to interact with the UI.
+3. Figure out what the interface between agents needs to be?
+4. Should the agent communication be natural language or structured? Can the agent figure out how to adapt the format via LLMs?
+5. 

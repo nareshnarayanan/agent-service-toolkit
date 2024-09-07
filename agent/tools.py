@@ -1,43 +1,31 @@
-import math
-import numexpr
-import re
-from langchain_core.tools import tool, BaseTool
-from langchain_community.tools import DuckDuckGoSearchResults, ArxivQueryRun
+from langchain_core.tools import tool
+from langchain_community.tools.arxiv.tool import ArxivQueryRun
+from langchain_community.tools.ddg_search import DuckDuckGoSearchRun
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_experimental.utilities import PythonREPL
+from typing import Annotated
 
-web_search = DuckDuckGoSearchResults(name="WebSearch")
+web_search = DuckDuckGoSearchRun(name="WebSearch")
 
 # Kinda busted since it doesn't return links
 arxiv_search = ArxivQueryRun(name="ArxivSearch")
 
-def calculator_func(expression: str) -> str:
-    """Calculates a math expression using numexpr.
-    
-    Useful for when you need to answer questions about math using numexpr.
-    This tool is only for math questions and nothing else. Only input
-    math expressions.
+tavily_search = TavilySearchResults(name="TavilySearch")
 
-    Args:
-        expression (str): A valid numexpr formatted math expression.
+# Warning: This executes code locally, which can be unsafe when not sandboxed
+repl = PythonREPL()
 
-    Returns:
-        str: The result of the math expression.
-    """
-
+@tool
+def python_repl(
+    code: Annotated[str, "The python code to execute to generate your chart."],
+):
+    """Use this to execute python code. If you want to see the output of a value,
+    you should print it out with `print(...)`. This is visible to the user."""
     try:
-        local_dict = {"pi": math.pi, "e": math.e}
-        output = str(
-            numexpr.evaluate(
-                expression.strip(),
-                global_dict={},  # restrict access to globals
-                local_dict=local_dict,  # add common mathematical functions
-            )
-        )
-        return re.sub(r"^\[|\]$", "", output)
-    except Exception as e:
-        raise ValueError(
-            f'calculator("{expression}") raised error: {e}.'
-            " Please try again with a valid numerical expression"
-        )
-
-calculator: BaseTool = tool(calculator_func)
-calculator.name = "Calculator"
+        result = repl.run(code)
+    except BaseException as e:
+        return f"Failed to execute. Error: {repr(e)}"
+    result_str = f"Successfully executed:\n```python\n{code}\n```\nStdout: {result}"
+    return (
+        result_str + "\n\nIf you have completed all tasks, respond with FINAL ANSWER."
+    )

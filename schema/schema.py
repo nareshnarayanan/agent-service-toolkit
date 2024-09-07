@@ -13,10 +13,10 @@ class UserInput(BaseModel):
         description="User input to the agent.",
         examples=["What is the weather in Tokyo?"],
     )
-    model: str = Field(
-        description="LLM Model to use for the agent.",
-        default="gpt-4o-mini",
-        examples=["gpt-4o-mini", "llama-3.1-70b"],
+    agent: str | None = Field(
+        description="Agent to use for the user input.",
+        default="research-assistant",
+        examples=["duckduckgo", "research-assistant"],
     )
     thread_id: str | None = Field(
         description="Thread ID to persist and continue a multi-turn conversation.",
@@ -132,4 +132,12 @@ class Feedback(BaseModel):
         description="Additional feedback kwargs, passed to LangSmith.",
         default={},
         examples=[{'comment': 'In-line human feedback'}],
+    )
+
+
+class AgentList(BaseModel):
+    """List of available agents."""
+    agents: List[str] = Field(
+        description="List of available agents.",
+        examples=[["research-assistant", "duckduckgo"]],
     )
